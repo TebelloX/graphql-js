@@ -1601,11 +1601,15 @@ type DispatcherResult = {|
  */
 export class Dispatcher {
   _subsequentPayloads: Array<Promise<IteratorResult<DispatcherResult, void>>>;
+  _iterators: Array<AsyncIterator<mixed>>;
+  _isDone: boolean;
   _initialResult: ?ExecutionResult;
   _hasReturnedInitialResult: boolean;
 
   constructor() {
     this._subsequentPayloads = [];
+    this._iterators = [];
+    this._isDone = false;
     this._hasReturnedInitialResult = false;
   }
 
@@ -1674,6 +1678,8 @@ export class Dispatcher {
     itemType: GraphQLOutputType,
   ): void {
     const subsequentPayloads = this._subsequentPayloads;
+    const iterators = this._iterators;
+    iterators.push(iterator);
     function next(index) {
       const fieldPath = addPath(path, index);
       const patchErrors = [];
@@ -1681,6 +1687,7 @@ export class Dispatcher {
         iterator.next().then(
           ({ value: data, done }) => {
             if (done) {
+              iterators.splice(iterators.indexOf(iterator), 1);
               return { value: undefined, done: true };
             }
 
@@ -1751,6 +1758,14 @@ export class Dispatcher {
   }
 
   _race(): Promise<IteratorResult<ExecutionPatchResult, void>> {
+    if (this._isDone) {
+      return Promise.resolve({
+        value: {
+          hasNext: false,
+        },
+        done: false,
+      });
+    }
     return new Promise((resolve) => {
       this._subsequentPayloads.forEach((promise) => {
         promise.then(() => {
@@ -1807,6 +1822,16 @@ export class Dispatcher {
     return this._race();
   }
 
+  _return(): Promise<IteratorResult<AsyncExecutionResult, void>> {
+    return Promise.all(
+      // $FlowFixMe[prop-missing]
+      this._iterators.map((iterator) => iterator.return?.()),
+    ).then(() => {
+      this._isDone = true;
+      return { value: undefined, done: true };
+    });
+  }
+
   get(initialResult: ExecutionResult): AsyncIterable<AsyncExecutionResult> {
     this._initialResult = initialResult;
     return ({
@@ -1814,6 +1839,7 @@ export class Dispatcher {
         return this;
       },
       next: () => this._next(),
+      return: () => this._return(),
     }: any);
   }
 }
